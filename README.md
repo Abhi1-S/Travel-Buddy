@@ -1,6 +1,6 @@
 
-🌍 Travel Buddy: AI travel planner 
-Using Cohere to auto-generate itineraries.
+🌍 Travel Buddy:
+Uses Cohere to auto-generate itineraries.
 Integrates Foursquare locations, WeatherAPI forecasts, and OSRM routing. Features interactive maps with optimized routes . Mobile-friendly trip planning made easy!
 
 
