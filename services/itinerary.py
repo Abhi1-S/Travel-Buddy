@@ -182,7 +182,8 @@ Rules:
             max_tokens=4000,
         )
 
-    except Exception:
+    except Exception as e:
+        st.error(f"Itinerary generation failed: {e}")
         return None
 
     # -----------------------------------------------------
