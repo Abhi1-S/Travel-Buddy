@@ -1,158 +1,103 @@
 # ✈️ Travel Buddy
 
-Travel Buddy is an AI-assisted travel itinerary planning application that has evolved from an earlier version of the project into a more complete end-to-end travel planning pipeline.
+Travel Buddy is an AI-assisted travel planning application that creates personalized multi-day itineraries based on a user's destination, travel dates, budget, and interests.
 
-The project is designed primarily as a **portfolio and learning project** demonstrating how multiple services can be combined to turn a user's travel preferences into a structured, enriched itinerary.
+The project started as a simpler travel-planning application and has since been expanded into a more complete pipeline that combines AI-generated planning with real-world location data, weather information, images, routes, and an interactive map.
 
-## Purpose
+## What It Does
 
-Travel Buddy demonstrates an automated travel-planning workflow where a user provides:
+A user provides:
 
 - Destination
 - Trip start date
 - Number of days
-- Budget level
+- Budget
 - Interests
 
-The application then generates and enriches an itinerary using multiple external services and APIs.
+Travel Buddy then builds an itinerary with activities for the morning, midday, and evening of each day.
 
-The goal is **not to provide a production-grade travel booking platform or guarantee perfectly accurate travel recommendations**. Instead, the project focuses on demonstrating practical integration of AI, APIs, data enrichment, routing, weather information, and interactive presentation in a single application.
+The generated locations are subsequently enriched with information from external services, so the final result is more than just an AI-generated list of places.
 
-## What the Application Does
+The current workflow is:
 
-The current pipeline follows this general flow:
+**User Input → AI Planning → Location Enrichment → Weather → Images → Routes → Map**
 
-**User Input → AI Itinerary Generation → Location Verification → Weather Enrichment → Image Enrichment → Route Calculation → Interactive Presentation**
+## How It Works
 
 ### AI Itinerary Generation
 
-The application uses Cohere to generate a structured multi-day itinerary based on the user's destination, trip duration, budget, interests, and start date.
+The itinerary is generated using Cohere.
 
-The generated itinerary contains locations and activities for:
+The AI considers the destination, trip duration, budget, and the user's interests to create a structured itinerary. It is instructed to use real places, avoid unnecessary repetition, and organize activities into a sensible daily schedule.
 
-- Morning
-- Midday
-- Evening
+### Real Location Data
 
-The AI is instructed to use real locations and avoid unnecessary repetition while producing a geographically sensible schedule.
+The locations suggested by the AI are passed through Foursquare Places to obtain real-world information such as coordinates, addresses, and place identifiers.
 
-### Location Verification
-
-Generated locations are enriched using Foursquare Places data.
-
-This provides real-world information such as:
-
-- Place name
-- Coordinates
-- Address
-- Foursquare place identifier
-
-This separates **AI-generated planning** from **real-world location data**.
+This allows the application to connect the AI's suggestions with actual locations.
 
 ### Weather
 
-Weather information is added to the itinerary so that users can see expected conditions for each day and, where available, individual itinerary periods.
+Weather information is added to the itinerary based on the destination and travel dates.
 
-The application presents information such as:
+The application can display details such as temperature, conditions, rain probability, sunrise, and sunset.
 
-- Temperature
-- Weather condition
-- Rain probability
-- Sunrise
-- Sunset
+### Images
 
-### Place Images
+Travel Buddy uses Openverse to find openly licensed images related to the places in the itinerary.
 
-The application uses the Openverse image API to find openly licensed images associated with itinerary locations.
-
-Images are treated as an enrichment layer rather than the source of truth for the itinerary. Because open image search depends on third-party metadata and community-contributed content, an image may occasionally be unavailable or less representative of the exact location.
-
-The application therefore prioritizes having a functional enrichment pipeline rather than attempting to guarantee perfect image matching for every attraction.
+Images are used to make the itinerary more visual and useful when exploring the generated destinations. Since the images come from an open image index, availability and relevance can vary between locations.
 
 ### Routes
 
-The itinerary is further enriched with route information between locations.
-
-This allows the application to present an approximate daily travel route and associated distance/time information.
+The application calculates routes between the locations planned for each day and presents approximate travel distance and duration.
 
 ### Interactive Map
 
-The final itinerary includes an interactive map showing the generated locations and their geographic relationships.
+The final itinerary is also displayed geographically on an interactive map, giving the user a quick view of where the planned locations are in relation to one another.
 
-## Design Approach
+## Why I Built It
 
-A key design decision in Travel Buddy is separating responsibilities between the different services.
+The main idea behind Travel Buddy was to explore what happens when an AI-generated plan is combined with real-world data and application logic.
 
-The AI is responsible for **planning**.
+Instead of stopping at:
 
-External APIs are responsible for **real-world enrichment and verification**.
+> "Here are some places you could visit."
 
-The application combines these layers into a single user-facing itinerary.
+the project takes those suggestions through several stages of enrichment and turns them into a more complete travel-planning experience.
 
-This makes the project useful as an example of an **AI + API integration pipeline** rather than simply an application that generates text with an LLM.
+It also provided a practical way to work with AI APIs, third-party services, structured data, caching, geographic information, and Streamlit in one project.
 
-## Current Scope
+## Technology
 
-Travel Buddy is intentionally scoped as a portfolio project.
+- **Python**
+- **Streamlit**
+- **Cohere** — itinerary generation
+- **Foursquare Places** — location data
+- **Open-Meteo / weather service** — weather information
+- **Openverse** — openly licensed images
+- **Routing service** — route and travel information
 
-It is **not intended to replace dedicated travel platforms, navigation applications, booking services, or professional travel-planning systems**.
+## Current State
 
-The generated itinerary should be treated as a useful starting point for trip planning. Users should independently verify:
+Travel Buddy is currently at a working end-to-end stage and is being prepared for deployment.
 
-- Opening hours
-- Ticket availability
-- Temporary closures
-- Local conditions
-- Travel times
-- Weather
-- Events
-- Prices
-- Other time-sensitive information
+The application can take a user's trip preferences, generate an itinerary, enrich the locations with external data, calculate routes, and present the result through a Streamlit interface.
 
-Third-party API availability, quotas, and response quality can also affect the final result.
+It is primarily a portfolio project focused on demonstrating the integration of AI and external services into a practical application.
 
-## What This Project Demonstrates
+The system depends on several third-party APIs, so results can vary depending on API availability, quotas, and the data returned by those services. The generated itinerary is therefore best viewed as a planning aid rather than a replacement for checking current travel information before a trip.
 
-The project demonstrates practical experience with:
+## Live Demo
 
-- AI-assisted structured generation
-- Prompt engineering
-- JSON-based AI responses
-- API integration
-- External data enrichment
-- Location resolution
-- Geographic coordinates
-- Weather APIs
-- Open image search
-- Route calculation
-- Streamlit application development
-- Python service separation
-- Caching
-- Error handling
-- Combining multiple independent services into an end-to-end pipeline
+**Coming soon:** [Travel Buddy Demo](#)
 
-The emphasis is on **building and integrating the pipeline**, rather than claiming perfect real-world accuracy.
+## Project Focus
 
-## Project Status
+Travel Buddy is less about building a perfect travel recommendation engine and more about building a complete, working application around an AI-generated plan.
 
-Travel Buddy is currently in its **completed portfolio-project stage** and is being prepared for deployment.
+The project brings together:
 
-A deployed version will be available here:
+**AI + APIs + Data Enrichment + Routing + Maps + Streamlit**
 
-**Live Demo:** [Coming Soon]
-
-The project continues to use external APIs and services, so functionality can vary depending on API availability, rate limits, quotas, and third-party data.
-
-## Usage
-
-Enter a destination, select the trip duration, budget, and interests, then generate the itinerary.
-
-The application will progressively process the request and enrich the generated itinerary with available location, weather, image, route, and map information.
-
-## Important Note
-
-Travel Buddy should be viewed as an **AI-assisted itinerary generation and enrichment tool**, not an authoritative travel-information source.
-
-Its purpose is to demonstrate how AI-generated planning can be combined with real-world APIs and application logic to create a useful travel-planning experience.
-
-The project prioritizes a working, understandable, end-to-end pipeline and practical engineering decisions over claiming 100% accuracy or production-level reliability.
+into one travel-planning workflow.
