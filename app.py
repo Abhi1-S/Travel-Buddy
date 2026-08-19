@@ -1,211 +1,476 @@
-
-import cohere
 import json
-import re
 import requests
 import streamlit as st
 import folium
-from streamlit_folium import st_folium, folium_static
+import cohere
+
+from streamlit_folium import folium_static
 from folium.plugins import MarkerCluster
-import polyline
-from datetime import datetime, timedelta
+
 from config import config
 
-# API Keys
+
+# ---------------------------------------------------------
+# Configuration
+# ---------------------------------------------------------
+
 COHERE_API_KEY = config.cohere_key
 FOURSQUARE_API_KEY = config.foursquare_key
 GOOGLE_CSE_API_KEY = config.google_cse_key
 SEARCH_ENGINE_ID = config.search_id
-WEATHERAPI_API_KEY = config.weather_key # WeatherAPI key
+WEATHERAPI_API_KEY = config.weather_key
 
 
-# Initialize clients and URLs
-OSRM_API_URL = "http://router.project-osrm.org/route/v1/driving/"
-co = cohere.Client(COHERE_API_KEY)
-FOURSQUARE_BASE_URL = "https://api.foursquare.com/v3/places/search"
+# ---------------------------------------------------------
+# API URLs
+# ---------------------------------------------------------
+
+OSRM_API_URL = "https://router.project-osrm.org/route/v1/driving/"
+FOURSQUARE_URL = "https://api.foursquare.com/v3/places/search"
 GOOGLE_CSE_URL = "https://www.googleapis.com/customsearch/v1"
 WEATHERAPI_URL = "https://api.weatherapi.com/v1/forecast.json"
 
-# Function to generate itinerary text using Cohere
-def generate_itinerary_text(city, days, budget, focus_category):
+
+# ---------------------------------------------------------
+# Cohere client
+# ---------------------------------------------------------
+
+co = cohere.ClientV2(api_key=COHERE_API_KEY)
+
+
+# ---------------------------------------------------------
+# AI itinerary generation
+# ---------------------------------------------------------
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def generate_itinerary(city, days, budget, focus_category):
     prompt = f"""
-    Create a detailed {days}-day travel itinerary for a traveler in {city}.
-    Focus heavily (70%) on these points of interest: {focus_category}.
-    The traveler has a budget level of {budget}. Provide specific activities for each day.
-    (Note: first fully generate a normal itinerary with one location per section of the day. Then, also include a JSON version where each section (morning, midday, evening) has only one location per day.)
-    """
+Create a {days}-day travel itinerary for a traveler visiting {city}.
+
+Budget level: {budget}
+Primary focus: {focus_category}
+
+Return ONLY valid JSON.
+Do not use markdown.
+Do not add explanations before or after the JSON.
+
+Use exactly this structure:
+
+{{
+  "Day 1": {{
+    "morning": "Location",
+    "midday": "Location",
+    "evening": "Location"
+  }}
+}}
+
+Rules:
+- Generate exactly {days} days.
+- Every day must contain morning, midday, and evening.
+- Each time period must contain exactly ONE location.
+- Use real places in {city}.
+- Keep locations relevant to the requested focus.
+- Avoid repeating the same location.
+"""
 
     response = co.chat(
-        model="command-r-plus",  # Use "command-r-plus" instead of "command-xlarge-nightly"
-        message = prompt
+        model="command-r-plus-08-2024",
+        messages=[
+            {
+                "role": "user",
+                "content": prompt
+            }
+        ],
+        response_format={"type": "json_object"},
+        max_tokens=2500
     )
-    
-    return response.text.strip()  # Adjust based on the response format
 
+    text = response.message.content[0].text
 
-
-
-# Function to extract JSON itinerary from the generated text
-def extract_json_from_itinerary(itinerary_text):
-    json_match = re.search(r'```json\n(.*?)\n```', itinerary_text, re.DOTALL)
-    if json_match:
-        json_string = json_match.group(1)
-        try:
-            json_data = json.loads(json_string)
-            return json_data
-        except json.JSONDecodeError as e:
-            print(f"Error decoding JSON: {e}")
-            return None
-    else:
-        print("No JSON found in the itinerary text.")
+    try:
+        itinerary = json.loads(text)
+    except json.JSONDecodeError:
         return None
 
-# Function to get coordinates using Foursquare API
+    return itinerary
+
+
+# ---------------------------------------------------------
+# Foursquare - coordinates
+# ---------------------------------------------------------
+
+@st.cache_data(ttl=86400, show_spinner=False)
 def get_coordinates(place_name, city):
-    headers = {"Authorization": FOURSQUARE_API_KEY}
-    params = {"query": place_name, "near": city, "limit": 1}
-    response = requests.get(FOURSQUARE_BASE_URL, headers=headers, params=params)
+    if not FOURSQUARE_API_KEY:
+        return None, None
 
-    if response.status_code == 200:
-        results = response.json().get("results", [])
-        if results:
-            lat = results[0]["geocodes"]["main"]["latitude"]
-            lng = results[0]["geocodes"]["main"]["longitude"]
-            return lat, lng
-    return None, None
+    headers = {
+        "Authorization": FOURSQUARE_API_KEY
+    }
 
-# Function to calculate the optimal route using OSRM API
-def calculate_optimal_route(locations):
-    coords = ";".join([f"{lng},{lat}" for lat, lng in locations])
-    url = f"{OSRM_API_URL}{coords}?overview=full&geometries=geojson"
-    response = requests.get(url)
-    if response.status_code == 200:
-        return response.json()["routes"][0]["geometry"]["coordinates"]
-    return None
-
-# Function to plot the itinerary on a map using Folium
-def plot_itinerary_on_map(itinerary, city="Delhi"):
-    coordinates = []
-    color_map = ["red", "blue", "green", "orange"]
-
-    # Get coordinates for the center of the city
-    city_lat, city_lng = get_coordinates(city, city)
-    if city_lat and city_lng:
-        map_center = [city_lat, city_lng]
-    else:
-        map_center = [28.6139, 77.2090]  # Default to Delhi if coordinates aren't found
-
-    # Create a folium map centered around the city
-    mymap = folium.Map(location=map_center, zoom_start=12)
-    marker_cluster = MarkerCluster().add_to(mymap)
-
-    # Iterate over the list of dictionaries
-    for day_idx, day in enumerate(itinerary.values()):  # Iterate through the days
-        for time, location in day.items():  # Directly access time-location pairs
-            lat, lng = get_coordinates(location, city)
-            if lat and lng:
-                folium.Marker(
-                    location=[lat, lng],
-                    popup=f"{time.capitalize()}: {location}",
-                    icon=folium.Icon(color=color_map[day_idx % len(color_map)])
-                ).add_to(marker_cluster)
-                coordinates.append((lat, lng))
-
-    if len(coordinates) > 1:  # Ensure there are multiple points for a route
-        route = calculate_optimal_route(coordinates)
-        if route:
-            # Use the route directly to draw a polyline
-            folium.PolyLine(locations=[[lat, lng] for lng, lat in route], color="blue", weight=5, opacity=0.7).add_to(mymap)
-
-    # Display the map using Streamlit
-    folium_static(mymap)
-
-# Function to fetch place images using Google CSE
-def fetch_place_image(place_name):
     params = {
-        "q": place_name,
+        "query": place_name,
+        "near": city,
+        "limit": 1
+    }
+
+    try:
+        response = requests.get(
+            FOURSQUARE_URL,
+            headers=headers,
+            params=params,
+            timeout=10
+        )
+
+        if response.status_code != 200:
+            return None, None
+
+        results = response.json().get("results", [])
+
+        if not results:
+            return None, None
+
+        geocodes = results[0].get("geocodes", {})
+        main = geocodes.get("main", {})
+
+        lat = main.get("latitude")
+        lng = main.get("longitude")
+
+        if lat is None or lng is None:
+            return None, None
+
+        return lat, lng
+
+    except requests.RequestException:
+        return None, None
+
+
+# ---------------------------------------------------------
+# OSRM routing
+# ---------------------------------------------------------
+
+@st.cache_data(ttl=86400, show_spinner=False)
+def calculate_route(locations):
+    if len(locations) < 2:
+        return None
+
+    coords = ";".join(
+        f"{lng},{lat}"
+        for lat, lng in locations
+    )
+
+    url = f"{OSRM_API_URL}{coords}"
+
+    params = {
+        "overview": "full",
+        "geometries": "geojson"
+    }
+
+    try:
+        response = requests.get(
+            url,
+            params=params,
+            timeout=15
+        )
+
+        if response.status_code != 200:
+            return None
+
+        data = response.json()
+
+        routes = data.get("routes", [])
+
+        if not routes:
+            return None
+
+        return routes[0]["geometry"]["coordinates"]
+
+    except (requests.RequestException, KeyError, IndexError):
+        return None
+
+
+# ---------------------------------------------------------
+# Google image search
+# ---------------------------------------------------------
+
+@st.cache_data(ttl=86400, show_spinner=False)
+def fetch_place_image(place_name, city):
+    if not GOOGLE_CSE_API_KEY or not SEARCH_ENGINE_ID:
+        return None
+
+    params = {
+        "q": f"{place_name} {city}",
         "cx": SEARCH_ENGINE_ID,
         "key": GOOGLE_CSE_API_KEY,
         "searchType": "image",
-        "num": 1
+        "num": 1,
+        "safe": "active"
     }
-    response = requests.get(GOOGLE_CSE_URL, params=params)
-    if response.status_code == 200:
-        results = response.json().get("items", [])
-        if results:
-            return results[0]["link"]
-    return None
 
-# Function to fetch weather data using WeatherAPI
-def fetch_weather(location, days=6):
+    try:
+        response = requests.get(
+            GOOGLE_CSE_URL,
+            params=params,
+            timeout=10
+        )
+
+        if response.status_code != 200:
+            return None
+
+        results = response.json().get("items", [])
+
+        if not results:
+            return None
+
+        return results[0].get("link")
+
+    except requests.RequestException:
+        return None
+
+
+# ---------------------------------------------------------
+# Weather
+# ---------------------------------------------------------
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def fetch_weather(city, days):
+    if not WEATHERAPI_API_KEY:
+        return None
+
     params = {
         "key": WEATHERAPI_API_KEY,
-        "q": location,
-        "days": days,  # Fetch forecast for up to 6 days
-        "aqi": "no",  # Disable air quality index data
-        "alerts": "no"  # Disable weather alerts
+        "q": city,
+        "days": min(days, 6),
+        "aqi": "no",
+        "alerts": "no"
     }
-    response = requests.get(WEATHERAPI_URL, params=params)
-    if response.status_code == 200:
-        weather_data = response.json()
-        forecast = weather_data.get("forecast", {}).get("forecastday", [])
-        if forecast:
-            return forecast  # Return the forecast for each day
-    return None
 
-# Function to display weather forecast for each day of the itinerary
-def display_weather_forecast(itinerary):
-    city = itinerary.get("city", "Delhi")  # Default city if not provided
-    weather_forecast = fetch_weather(city)
-    if weather_forecast:
-        st.subheader(f"Weather Forecast for {city}")
-        for idx, day in enumerate(weather_forecast):
-            date = day["date"]
-            day_temp = day["day"]["avgtemp_c"]
-            condition = day["day"]["condition"]["text"]
-            st.write(f"{date}: {condition} - {day_temp}Â°C")
-    else:
-        st.write("Weather data not available.")
+    try:
+        response = requests.get(
+            WEATHERAPI_URL,
+            params=params,
+            timeout=10
+        )
 
-# Function to display the itinerary with images and weather data
-def display_itinerary_with_images_and_weather(itinerary):
+        if response.status_code != 200:
+            return None
+
+        data = response.json()
+
+        return data.get("forecast", {}).get("forecastday", [])
+
+    except requests.RequestException:
+        return None
+
+
+def display_weather_forecast(city, days):
+    weather_forecast = fetch_weather(city, days)
+
+    if not weather_forecast:
+        st.info("Weather data is currently unavailable.")
+        return
+
+    st.subheader(f"Weather Forecast — {city}")
+
+    for day in weather_forecast:
+        date = day.get("date", "")
+        day_data = day.get("day", {})
+
+        temperature = day_data.get("avgtemp_c")
+        condition = day_data.get("condition", {}).get("text")
+
+        if temperature is not None and condition:
+            st.write(
+                f"**{date}:** {condition} — {temperature:.1f}°C"
+            )
+
+
+# ---------------------------------------------------------
+# Itinerary display
+# ---------------------------------------------------------
+
+def display_itinerary(itinerary, city):
     for day, schedule in itinerary.items():
-        st.write(f"**{day}:**")
+
+        st.subheader(day)
+
         for time, location in schedule.items():
-            st.write(f"{time.capitalize()}: {location}")
-            image_url = fetch_place_image(location)
-            weather = fetch_weather(location)
+
+            st.write(
+                f"**{time.capitalize()}:** {location}"
+            )
+
+            image_url = fetch_place_image(location, city)
+
             if image_url:
-                st.image(image_url, caption=f"Image of {location}")
-            if weather:
-                weather_data = weather[0]["day"]
-                temp = weather_data["avgtemp_c"]
-                condition = weather_data["condition"]["text"]
-                st.write(f"Weather: {condition} - {temp}Â°C")
-            st.write("----")
+                st.image(
+                    image_url,
+                    caption=location,
+                    use_container_width=True
+                )
+
+            st.write("---")
 
 
+# ---------------------------------------------------------
+# Map
+# ---------------------------------------------------------
 
-# Main function for Streamlit app
+def plot_itinerary_on_map(itinerary, city):
+    city_lat, city_lng = get_coordinates(city, city)
+
+    if city_lat is None or city_lng is None:
+        map_center = [28.6139, 77.2090]
+    else:
+        map_center = [city_lat, city_lng]
+
+    itinerary_map = folium.Map(
+        location=map_center,
+        zoom_start=12
+    )
+
+    marker_cluster = MarkerCluster().add_to(itinerary_map)
+
+    day_colors = [
+        "red",
+        "blue",
+        "green",
+        "orange",
+        "purple",
+        "darkred"
+    ]
+
+    for day_index, (day, schedule) in enumerate(itinerary.items()):
+
+        day_coordinates = []
+
+        for time, location in schedule.items():
+
+            lat, lng = get_coordinates(location, city)
+
+            if lat is None or lng is None:
+                continue
+
+            folium.Marker(
+                location=[lat, lng],
+                popup=f"{time.capitalize()}: {location}",
+                tooltip=location,
+                icon=folium.Icon(
+                    color=day_colors[
+                        day_index % len(day_colors)
+                    ]
+                )
+            ).add_to(marker_cluster)
+
+            day_coordinates.append((lat, lng))
+
+        # Route only within this day
+        if len(day_coordinates) > 1:
+
+            route = calculate_route(
+                tuple(day_coordinates)
+            )
+
+            if route:
+
+                route_points = [
+                    [lat, lng]
+                    for lng, lat in route
+                ]
+
+                folium.PolyLine(
+                    locations=route_points,
+                    color=day_colors[
+                        day_index % len(day_colors)
+                    ],
+                    weight=5,
+                    opacity=0.7,
+                    tooltip=day
+                ).add_to(itinerary_map)
+
+    folium_static(itinerary_map)
+
+
+# ---------------------------------------------------------
+# Main application
+# ---------------------------------------------------------
+
 def main():
-    st.title("Travel Buddy- Travel Assistance")
 
-    city = st.text_input("Enter city name:", "Delhi")
-    days = st.slider("Select number of days:", 1, 6, 5)  # Limit to max 6 days
-    budget = st.selectbox("Select budget level:", ["Low", "Medium", "High"])
-    focus_category = st.text_input("Enter your category of focus:", "sightseeing")
+    st.set_page_config(
+        page_title="Travel Buddy",
+        page_icon="✈️",
+        layout="wide"
+    )
 
-    if st.button("Generate Itinerary"):
-        itinerary_text = generate_itinerary_text(city, days, budget, focus_category)
+    st.title("Travel Buddy — Travel Assistance")
+
+    city = st.text_input(
+        "Enter city name:",
+        "Delhi"
+    )
+
+    days = st.slider(
+        "Select number of days:",
+        min_value=1,
+        max_value=6,
+        value=5
+    )
+
+    budget = st.selectbox(
+        "Select budget level:",
+        ["Low", "Medium", "High"]
+    )
+
+    focus_category = st.text_input(
+        "Enter your category of focus:",
+        "sightseeing"
+    )
+
+    if st.button(
+        "Generate Itinerary",
+        type="primary"
+    ):
+
+        if not city.strip():
+            st.error("Please enter a city.")
+            return
+
+        with st.spinner("Generating your itinerary..."):
+
+            itinerary = generate_itinerary(
+                city.strip(),
+                days,
+                budget,
+                focus_category.strip()
+            )
+
+        if not itinerary:
+            st.error(
+                "Unable to generate a valid itinerary. "
+                "Please try again."
+            )
+            return
+
         st.subheader("Generated Itinerary")
-        st.write(itinerary_text)
 
-        itinerary_json = extract_json_from_itinerary(itinerary_text)
-        if itinerary_json:
-            display_itinerary_with_images_and_weather(itinerary_json)
-            plot_itinerary_on_map(itinerary_json, city)
-            
+        display_itinerary(
+            itinerary,
+            city.strip()
+        )
 
-            
+        display_weather_forecast(
+            city.strip(),
+            days
+        )
+
+        st.subheader("Trip Map")
+
+        plot_itinerary_on_map(
+            itinerary,
+            city.strip()
+        )
+
+
 if __name__ == "__main__":
     main()
