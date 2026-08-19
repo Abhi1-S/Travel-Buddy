@@ -1,5 +1,0 @@
-streamlit==1.33.0
-cohere==7.0.8
-requests==2.31.0
-folium==0.14.0
-streamlit-folium==0.15.1
