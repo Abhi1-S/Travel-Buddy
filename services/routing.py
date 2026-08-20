@@ -1,11 +1,20 @@
+from concurrent.futures import ThreadPoolExecutor
+
 import requests
 import streamlit as st
 
 
-OSRM_API_URL = "https://router.project-osrm.org/route/v1/driving/"
+OSRM_API_URL = (
+    "https://router.project-osrm.org/route/v1/driving/"
+)
+
+ROUTE_TIMEOUT = 6
 
 
-@st.cache_data(ttl=86400, show_spinner=False)
+@st.cache_data(
+    ttl=86400,
+    show_spinner=False,
+)
 def calculate_route(locations: tuple):
     """
     Calculate a driving route through the supplied locations.
@@ -24,7 +33,7 @@ def calculate_route(locations: tuple):
             "duration_min": float
         }
 
-    Returns None if a route cannot be calculated.
+    Returns None if a route cannot be calculated quickly.
     """
 
     if len(locations) < 2:
@@ -47,14 +56,17 @@ def calculate_route(locations: tuple):
         response = requests.get(
             url,
             params=params,
-            timeout=15,
+            timeout=ROUTE_TIMEOUT,
         )
 
         response.raise_for_status()
 
         data = response.json()
 
-    except (requests.RequestException, ValueError):
+    except (
+        requests.RequestException,
+        ValueError,
+    ):
         return None
 
     routes = data.get("routes", [])
@@ -64,7 +76,11 @@ def calculate_route(locations: tuple):
 
     route = routes[0]
 
-    geometry = route.get("geometry", {}).get("coordinates", [])
+    geometry = (
+        route
+        .get("geometry", {})
+        .get("coordinates", [])
+    )
 
     if not geometry:
         return None
@@ -82,52 +98,103 @@ def calculate_route(locations: tuple):
     }
 
 
-def add_routes_to_itinerary(itinerary: dict):
+def _get_day_locations(day: dict):
     """
-    Calculate one route for each day.
-
-    The order is the itinerary order:
-        morning -> midday -> evening
-
-    Routes never connect locations belonging to different days.
+    Extract route coordinates for one itinerary day.
     """
 
-    for day in itinerary.get("days", []):
+    day_locations = []
 
-        day_locations = []
+    for period in (
+        "morning",
+        "midday",
+        "evening",
+    ):
+        section = day.get(period)
 
-        for period in (
-            "morning",
-            "midday",
-            "evening",
-        ):
-            section = day.get(period)
+        if not section:
+            continue
 
-            if not section:
-                continue
+        place = section.get("place")
 
-            place = section.get("place")
+        if not place:
+            continue
 
-            if not place:
-                continue
+        latitude = place.get("latitude")
+        longitude = place.get("longitude")
 
-            latitude = place.get("latitude")
-            longitude = place.get("longitude")
+        if latitude is None or longitude is None:
+            continue
 
-            if latitude is None or longitude is None:
-                continue
-
-            day_locations.append(
-                (
-                    float(latitude),
-                    float(longitude),
-                )
+        try:
+            coordinates = (
+                float(latitude),
+                float(longitude),
             )
 
-        route = calculate_route(
-            tuple(day_locations)
-        )
+        except (
+            TypeError,
+            ValueError,
+        ):
+            continue
 
+        day_locations.append(coordinates)
+
+    return tuple(day_locations)
+
+
+def _calculate_day_route(day: dict):
+    """
+    Calculate the route for one day.
+    """
+
+    locations = _get_day_locations(day)
+
+    if len(locations) < 2:
+        return None
+
+    return calculate_route(locations)
+
+
+def add_routes_to_itinerary(itinerary: dict):
+    """
+    Calculate routes for all itinerary days concurrently.
+
+    Each day's OSRM request is independent, so a 6-day trip
+    can calculate up to 6 routes concurrently.
+    """
+
+    days = itinerary.get("days", [])
+
+    if not days:
+        return itinerary
+
+    # -----------------------------------------------------
+    # Calculate daily routes concurrently
+    # -----------------------------------------------------
+
+    with ThreadPoolExecutor(
+        max_workers=min(6, len(days))
+    ) as executor:
+
+        futures = [
+            executor.submit(
+                _calculate_day_route,
+                day,
+            )
+            for day in days
+        ]
+
+        routes = [
+            future.result()
+            for future in futures
+        ]
+
+    # -----------------------------------------------------
+    # Attach routes to their corresponding days
+    # -----------------------------------------------------
+
+    for day, route in zip(days, routes):
         day["route"] = route
 
     return itinerary

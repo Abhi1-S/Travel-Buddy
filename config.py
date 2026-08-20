@@ -14,8 +14,7 @@ def get_secret(name: str):
     return os.getenv(name)
 
 
-COHERE_API_KEY = get_secret("COHERE_API_KEY")
+GROQ_API_KEY = get_secret("GROQ_API_KEY")
+
 FOURSQUARE_API_KEY = get_secret("FOURSQUARE_API_KEY")
-GOOGLE_CSE_API_KEY = get_secret("GOOGLE_CSE_API_KEY")
-SEARCH_ENGINE_ID = get_secret("SEARCH_ENGINE_ID")
 WEATHERAPI_API_KEY = get_secret("WEATHERAPI_API_KEY")

@@ -1,19 +1,95 @@
 import json
+import re
 from datetime import date, timedelta
 
-import cohere
 import streamlit as st
+from groq import Groq
 
-from config import COHERE_API_KEY
+from config import GROQ_API_KEY
 
 
 # ---------------------------------------------------------
-# Cohere client
+# Groq client
 # ---------------------------------------------------------
 
-co = cohere.ClientV2(
-    api_key=COHERE_API_KEY
+client = Groq(
+    api_key=GROQ_API_KEY
 )
+
+
+# ---------------------------------------------------------
+# Configuration
+# ---------------------------------------------------------
+
+MODEL = "openai/gpt-oss-20b"
+
+MIN_DAYS = 1
+MAX_DAYS = 6
+
+LOCATIONS_PER_DAY = 3
+
+REQUEST_TIMEOUT = 25
+MAX_TOKENS = 1200
+
+
+# ---------------------------------------------------------
+# Location normalization
+# ---------------------------------------------------------
+
+def normalize_location_name(location: str) -> str:
+    """
+    Normalize a place name only for duplicate detection.
+
+    The original AI-generated name is preserved for display.
+    """
+
+    if not isinstance(location, str):
+        return ""
+
+    value = location.casefold().strip()
+
+    value = re.sub(
+        r"[^a-z0-9]+",
+        " ",
+        value,
+    )
+
+    removable_words = {
+        "arulmigu",
+        "sri",
+        "shri",
+        "sree",
+        "swamy",
+        "swami",
+        "temple",
+        "museum",
+        "beach",
+        "park",
+        "garden",
+        "fort",
+        "palace",
+        "church",
+        "cathedral",
+        "mosque",
+        "mandir",
+        "masjid",
+        "hall",
+        "centre",
+        "center",
+    }
+
+    words = value.split()
+
+    meaningful_words = [
+        word
+        for word in words
+        if word not in removable_words
+    ]
+
+    if not meaningful_words:
+        meaningful_words = words
+
+    return " ".join(meaningful_words)
 
 
 # ---------------------------------------------------------
@@ -34,176 +110,205 @@ def generate_itinerary(
     """
     Generate a structured multi-day travel itinerary.
 
-    The AI determines:
-        - locations
-        - activities
-        - short descriptions
+    The AI generates only:
 
-    Other services later add:
-        - real-world coordinates
-        - weather
-        - images
-        - road routes
+        location
+        activity
+        description
+
+    Other services handle:
+
+        place verification
+        coordinates
+        weather
+        images
+        routes
     """
 
-    start = date.fromisoformat(start_date)
+    # -----------------------------------------------------
+    # Validate input
+    # -----------------------------------------------------
+
+    if not isinstance(days, int):
+        return None
+
+    if days < MIN_DAYS or days > MAX_DAYS:
+        return None
+
+    if not isinstance(city, str):
+        return None
+
+    city = city.strip()
+
+    if not city:
+        return None
+
+    if not isinstance(budget, str):
+        budget = ""
+
+    budget = budget.strip()
+
+    if not isinstance(focus_category, str):
+        focus_category = ""
+
+    focus_category = focus_category.strip()
+
+    try:
+        start = date.fromisoformat(start_date)
+
+    except (TypeError, ValueError):
+        return None
+
     end = start + timedelta(days=days - 1)
 
+    expected_dates = [
+        (
+            start + timedelta(days=index)
+        ).isoformat()
+        for index in range(days)
+    ]
+
+    # -----------------------------------------------------
+    # Prompt
+    # -----------------------------------------------------
+
     prompt = f"""
-Create a detailed {days}-day travel itinerary for a traveler
-visiting {city}.
+Create a {days}-day travel itinerary for {city}.
 
-Trip start date: {start.isoformat()}
-Trip end date: {end.isoformat()}
+Dates:
+{start.isoformat()} to {end.isoformat()}
 
-Budget level:
-{budget}
+Budget: {budget}
+Interests: {focus_category}
 
-Primary interests:
-{focus_category}
+Generate exactly 3 different real places for EACH day.
 
-Return ONLY one valid JSON object.
+The three places for every day must be ordered:
 
-Do not use Markdown.
-Do not add explanations before or after the JSON.
-
-Use exactly this structure:
-
-{{
-  "destination": "{city}",
-  "start_date": "{start.isoformat()}",
-  "end_date": "{end.isoformat()}",
-  "days": [
-    {{
-      "day": 1,
-      "date": "{start.isoformat()}",
-      "morning": {{
-        "location": "Real place name",
-        "activity": "What the traveler should do there",
-        "description": "Short factual description of the location"
-      }},
-      "midday": {{
-        "location": "Real place name",
-        "activity": "What the traveler should do there",
-        "description": "Short factual description of the location"
-      }},
-      "evening": {{
-        "location": "Real place name",
-        "activity": "What the traveler should do there",
-        "description": "Short factual description of the location"
-      }}
-    }}
-  ]
-}}
+1. morning
+2. midday
+3. evening
 
 Rules:
 
-1. Generate exactly {days} days.
+- Use real, established places in {city}.
+- Never invent a place.
+- Never intentionally repeat a place anywhere in the trip.
+- Never use alternate names for the same physical place.
+- Prefer geographically nearby places on the same day.
+- Arrange places in sensible travel order.
+- Match the itinerary to the requested interests.
+- Activity must be short and practical.
+- Description must be one short factual sentence.
+- Do not include addresses.
+- Do not include coordinates.
+- Do not include prices.
+- Do not include weather.
+- Do not include opening hours.
+- Do not include images.
+- Do not include routes.
 
-2. Day numbers must start at 1 and increase sequentially.
+The required dates are exactly:
 
-3. Dates must start at {start.isoformat()} and increase
-   by exactly one calendar day.
+{", ".join(expected_dates)}
 
-4. Every day must contain exactly:
-   - morning
-   - midday
-   - evening
-
-5. Every time period must contain exactly ONE location.
-
-6. Every location must contain:
-   - location
-   - activity
-   - description
-
-7. Use real, well-known places that actually exist in {city}.
-
-8. Do not invent attractions, landmarks, museums,
-   restaurants, neighborhoods, or other locations.
-
-9. Keep locations relevant to the traveler's interests.
-
-10. Do not repeat the same location during the trip.
-
-11. Group geographically nearby locations together on
-    the same day whenever reasonably possible.
-
-12. Within each day, arrange the locations in a sensible
-    geographic and travel order:
-    morning -> midday -> evening.
-
-13. Avoid unnecessary long-distance travel between
-    consecutive locations on the same day.
-
-14. Consider the normal character of each time period.
-    For example:
-    - morning: attractions, monuments, museums, parks
-    - midday: nearby attractions, markets, food areas
-    - evening: viewpoints, cultural areas, nightlife,
-      evening attractions, or relaxed areas
-
-15. Respect the requested budget level when selecting
-    activities and locations.
-
-16. Activities should be concise and practical.
-
-17. Descriptions should be short, factual, and useful.
-    Do not write marketing language.
-
-18. Do not include coordinates, addresses, opening hours,
-    weather, prices, travel times, or image URLs.
-    Those are handled by other services.
-
-19. Do not include additional JSON fields.
-
-20. Do not include multiple locations inside one time period.
-
-21. Prefer established attractions and places that are
-    likely to be recognized by a real-world places API.
+Return exactly those dates.
+Each date must contain exactly three places.
 """
 
     # -----------------------------------------------------
-    # Call Cohere
+    # JSON Schema
+    # -----------------------------------------------------
+
+    date_properties = {}
+
+    for expected_date in expected_dates:
+
+        date_properties[expected_date] = {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "location": {
+                        "type": "string"
+                    },
+                    "activity": {
+                        "type": "string"
+                    },
+                    "description": {
+                        "type": "string"
+                    },
+                },
+                "required": [
+                    "location",
+                    "activity",
+                    "description",
+                ],
+                "additionalProperties": False,
+            },
+            "minItems": LOCATIONS_PER_DAY,
+            "maxItems": LOCATIONS_PER_DAY,
+        }
+
+    itinerary_schema = {
+        "type": "object",
+        "properties": date_properties,
+        "required": expected_dates,
+        "additionalProperties": False,
+    }
+
+    # -----------------------------------------------------
+    # Call Groq
     # -----------------------------------------------------
 
     try:
-        response = co.chat(
-            model="command-r-plus-08-2024",
+        response = client.chat.completions.create(
+            model=MODEL,
             messages=[
-                cohere.UserChatMessageV2(
-                    role="user",
-                    content=prompt,
-                )
+                {
+                    "role": "system",
+                    "content": (
+                        "You are a travel itinerary generator. "
+                        "Return only the requested structured data. "
+                        "Use real established places and never "
+                        "intentionally invent locations."
+                    ),
+                },
+                {
+                    "role": "user",
+                    "content": prompt,
+                },
             ],
-            response_format=cohere.JsonObjectResponseFormatV2(
-                type="json_object"
-            ),
-            max_tokens=4000,
+            response_format={
+                "type": "json_schema",
+                "json_schema": {
+                    "name": "travel_itinerary",
+                    "strict": True,
+                    "schema": itinerary_schema,
+                },
+            },
+            max_tokens=MAX_TOKENS,
+            temperature=0,
+            reasoning_effort="low",
+            timeout=REQUEST_TIMEOUT,
         )
 
-    except Exception as e:
-        st.error(f"Itinerary generation failed: {e}")
+    except Exception as exc:
+        print(
+            f"Groq itinerary generation failed: {exc}"
+        )
         return None
 
     # -----------------------------------------------------
-    # Extract response text
+    # Extract response
     # -----------------------------------------------------
 
-    content = response.message.content
-
-    if not content:
+    if not response.choices:
         return None
 
-    text = None
+    message = response.choices[0].message
 
-    for item in content:
-        if isinstance(
-            item,
-            cohere.TextAssistantMessageResponseContentItem,
-        ):
-            text = item.text
-            break
+    text = message.content
 
     if not text:
         return None
@@ -213,83 +318,96 @@ Rules:
     # -----------------------------------------------------
 
     try:
-        itinerary = json.loads(text)
+        raw_itinerary = json.loads(text)
 
-    except json.JSONDecodeError:
+    except (json.JSONDecodeError, TypeError):
+        return None
+
+    if not isinstance(raw_itinerary, dict):
         return None
 
     # -----------------------------------------------------
-    # Validate structure
+    # Validate date keys
     # -----------------------------------------------------
 
-    if not isinstance(itinerary, dict):
-        return None
-
-    generated_days = itinerary.get("days")
-
-    if not isinstance(generated_days, list):
-        return None
-
-    if len(generated_days) != days:
+    if set(raw_itinerary.keys()) != set(
+        expected_dates
+    ):
         return None
 
     # -----------------------------------------------------
-    # Validate destination metadata
+    # Convert to application structure
     # -----------------------------------------------------
 
-    if itinerary.get("destination") != city:
-        return None
+    generated_days = []
 
-    if itinerary.get("start_date") != start.isoformat():
-        return None
-
-    if itinerary.get("end_date") != end.isoformat():
-        return None
-
-    # -----------------------------------------------------
-    # Validate every day
-    # -----------------------------------------------------
-
-    required_periods = (
-        "morning",
-        "midday",
-        "evening",
-    )
-
-    expected_date = start
+    # Tracks normalized names across the ENTIRE trip.
     seen_locations = set()
 
-    for index, day in enumerate(generated_days):
+    for index, expected_date in enumerate(
+        expected_dates
+    ):
 
-        if not isinstance(day, dict):
+        places_for_day = raw_itinerary.get(
+            expected_date
+        )
+
+        if not isinstance(
+            places_for_day,
+            list,
+        ):
             return None
 
-        expected_day_number = index + 1
-
-        if day.get("day") != expected_day_number:
+        if len(places_for_day) != LOCATIONS_PER_DAY:
             return None
 
-        if day.get("date") != expected_date.isoformat():
-            return None
+        day_data = {
+            "day": index + 1,
+            "date": expected_date,
+        }
 
-        for period in required_periods:
+        periods = (
+            "morning",
+            "midday",
+            "evening",
+        )
 
-            section = day.get(period)
+        for period, section in zip(
+            periods,
+            places_for_day,
+        ):
 
             if not isinstance(section, dict):
                 return None
 
-            location = section.get("location")
-            activity = section.get("activity")
-            description = section.get("description")
+            location = section.get(
+                "location"
+            )
 
-            if not isinstance(location, str):
+            activity = section.get(
+                "activity"
+            )
+
+            description = section.get(
+                "description"
+            )
+
+            if not isinstance(
+                location,
+                str,
+            ):
                 return None
 
-            if not isinstance(activity, str):
+            if not isinstance(
+                activity,
+                str,
+            ):
                 return None
 
-            if not isinstance(description, str):
+            if not isinstance(
+                description,
+                str,
+            ):
                 return None
 
             location = location.strip()
@@ -305,13 +423,84 @@ Rules:
             if not description:
                 return None
 
-            location_key = location.casefold()
+            # -------------------------------------------------
+            # Duplicate / alternate-name detection
+            # -------------------------------------------------
+
+            location_key = normalize_location_name(
+                location
+            )
+
+            if not location_key:
+                return None
 
             if location_key in seen_locations:
                 return None
 
-            seen_locations.add(location_key)
+            seen_locations.add(
+                location_key
+            )
 
-        expected_date += timedelta(days=1)
+            day_data[period] = {
+                "location": location,
+                "activity": activity,
+                "description": description,
+            }
+
+        generated_days.append(day_data)
+
+    # ---------------------------------------------------------
+    # Final itinerary
+    # ---------------------------------------------------------
+
+    itinerary = {
+        "destination": city,
+        "start_date": start.isoformat(),
+        "end_date": end.isoformat(),
+        "days": generated_days,
+    }
+
+    # ---------------------------------------------------------
+    # Final structural validation
+    # ---------------------------------------------------------
+
+    if len(itinerary["days"]) != days:
+        return None
+
+    total_locations = 0
+
+    for day in itinerary["days"]:
+
+        for period in (
+            "morning",
+            "midday",
+            "evening",
+        ):
+
+            if period not in day:
+                return None
+
+            section = day[period]
+
+            if not isinstance(section, dict):
+                return None
+
+            if not section.get("location"):
+                return None
+
+            if not section.get("activity"):
+                return None
+
+            if not section.get("description"):
+                return None
+
+            total_locations += 1
+
+    expected_total = (
+        days * LOCATIONS_PER_DAY
+    )
+
+    if total_locations != expected_total:
+        return None
 
     return itinerary
